@@ -14,6 +14,7 @@
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
+#include "devices/timer.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -27,6 +28,10 @@ static struct list ready_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
+
+/* List of processes in THREAD_SLEEPING state, that is, processes
+   that are not going to use the cpu. */
+static struct list sleeping_list;
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -53,6 +58,7 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 /* Scheduling. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
+static uint64_t wake_time_min = INT64_MAX;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -115,6 +121,29 @@ thread_start (void)
 
   /* Wait for the idle thread to initialize idle_thread. */
   sema_down (&idle_started);
+}
+
+/* More efficient implementation for timer_sleep(). */
+void
+thread_sleep(int16_t ticks) 
+{
+  struct thread *cur = running_thread();
+  enum intr_level old_level = intr_disable();
+  
+  if (cur != idle_thread) {
+    list_push_back(&sleeping_list, &cur->elem);
+    cur->status = THREAD_SLEEPING;
+    cur->wake_time = timer_ticks() + ticks;
+
+    /* Update minimum wake time */
+    if (wake_time_min >= cur->wake_time) {
+      wake_time_min = cur->wake_time;
+    }
+
+    schedule();
+  }
+
+  intr_set_level(old_level);
 }
 
 /* Called by the timer interrupt handler at each timer tick.
@@ -375,7 +404,7 @@ thread_get_recent_cpu (void)
   /* Not yet implemented. */
   return 0;
 }
-
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by
@@ -410,7 +439,7 @@ idle (void *idle_started_ UNUSED)
 
          See [IA32-v2a] "HLT", [IA32-v2b] "STI", and [IA32-v3a]
          7.11.1 "HLT Instruction". */
-      asm volatile ("sti; hlt" : : : "memory");
+      __asm__ __volatile__ ("sti; hlt" : : : "memory");
     }
 }
 
@@ -424,7 +453,7 @@ kernel_thread (thread_func *function, void *aux)
   function (aux);       /* Execute the thread function. */
   thread_exit ();       /* If function() returns, kill the thread. */
 }
-
+
 /* Returns the running thread. */
 struct thread *
 running_thread (void) 
@@ -552,6 +581,33 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
+
+  int16_t cur_ticks = timer_ticks();
+
+  if (cur_ticks >= wake_time_min) {
+    struct list_elem *temp, *e = list_begin(&sleeping_list);
+    int16_t next_wake_time_min = INT64_MAX;
+
+    while (e != list_end(&sleeping_list)) {
+      struct thread *t = list_entry(e, struct thread, allelem);
+      
+      if (cur_ticks >= t->wake_time) {
+        list_push_back(&ready_list, &t->elem);
+        t->status = THREAD_READY;
+        temp = e;
+        e = list_next(e);
+        list_remove(temp);
+      }
+      else {
+        if (next_wake_time_min > t->wake_time) {
+          next_wake_time_min = t->wake_time;
+        }
+        e = list_next(e);
+      }
+    }
+    wake_time_min = next_wake_time_min;
+  }
+
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
@@ -578,7 +634,7 @@ allocate_tid (void)
 
   return tid;
 }
-
+
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
