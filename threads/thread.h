@@ -10,7 +10,6 @@ enum thread_status
   {
     THREAD_RUNNING,     /* Running thread. */
     THREAD_READY,       /* Not running but ready to run. */
-    THREAD_SLEEPING,    /* Sleeping thread. */
     THREAD_BLOCKED,     /* Waiting for an event to trigger. */
     THREAD_DYING        /* About to be destroyed. */
   };
@@ -115,7 +114,7 @@ struct thread
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 
-void thread_wakeup(void);
+void thread_wakeup(int64_t);
 
 bool comp_pri(const struct list_elem *, const struct list_elem *, void *);
 

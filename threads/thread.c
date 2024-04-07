@@ -29,8 +29,6 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
-/* List of processes in THREAD_SLEEPING state, that is, processes
-   that are not going to use the cpu. */
 static struct list sleeping_list;
 
 /* Idle thread. */
@@ -78,30 +76,16 @@ void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
 void
-thread_wakeup() {
-  int64_t cur_ticks = timer_ticks();
-
-  if (cur_ticks >= wake_time_min && !list_empty(&sleeping_list)) {
+thread_wakeup(int64_t cur_ticks) {
+  if (cur_ticks >= wake_time_min) {
     struct list_elem *temp, *e = list_begin(&sleeping_list);
     int64_t next_wake_time_min = INT64_MAX;
-
     while (e != list_end(&sleeping_list)) {
       struct thread *t = list_entry(e, struct thread, allelem);
       
       if (cur_ticks >= t->wake_time) {
-        temp = e;
-        e = list_next(e);
-        list_remove(temp);
-
-        enum intr_level old_level;
-
-        ASSERT (is_thread (t));
-
-        old_level = intr_disable ();
-        ASSERT (t->status == THREAD_SLEEPING);
-        list_insert_ordered(&ready_list, &t->elem, comp_pri, NULL);
-        t->status = THREAD_READY;
-        intr_set_level (old_level);
+        e = list_remove(e);
+        thread_unblock(t);
       }
       else {
         if (next_wake_time_min > t->wake_time) {
@@ -222,8 +206,8 @@ thread_sleep(int64_t ticks)
   if (cur != idle_thread) {
     struct list_elem *temp = &cur->elem;
     list_remove(&cur->elem);
-    list_insert_ordered(&sleeping_list, temp, comp_pri, NULL);
-    cur->status = THREAD_SLEEPING;
+    list_push_back(&sleeping_list, temp);
+    cur->status = THREAD_BLOCKED;
     cur->wake_time = timer_ticks() + ticks;
 
     /* Update minimum wake time */
