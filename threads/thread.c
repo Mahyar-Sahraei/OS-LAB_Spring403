@@ -58,7 +58,7 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 /* Scheduling. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
-static uint64_t wake_time_min = INT64_MAX;
+int64_t wake_time_min = INT64_MAX;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -76,6 +76,94 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+void
+thread_wakeup() {
+  int64_t cur_ticks = timer_ticks();
+
+  if (cur_ticks >= wake_time_min && !list_empty(&sleeping_list)) {
+    struct list_elem *temp, *e = list_begin(&sleeping_list);
+    int64_t next_wake_time_min = INT64_MAX;
+
+    while (e != list_end(&sleeping_list)) {
+      struct thread *t = list_entry(e, struct thread, allelem);
+      
+      if (cur_ticks >= t->wake_time) {
+        temp = e;
+        e = list_next(e);
+        list_remove(temp);
+
+        enum intr_level old_level;
+
+        ASSERT (is_thread (t));
+
+        old_level = intr_disable ();
+        ASSERT (t->status == THREAD_SLEEPING);
+        list_insert_ordered(&ready_list, &t->elem, comp_pri, NULL);
+        t->status = THREAD_READY;
+        intr_set_level (old_level);
+      }
+      else {
+        if (next_wake_time_min > t->wake_time) {
+          next_wake_time_min = t->wake_time;
+        }
+        e = list_next(e);
+      }
+    }
+    wake_time_min = next_wake_time_min;
+  }
+}
+
+/* Function that compares the priority of two threads*/
+bool
+comp_pri(const struct list_elem *e1, const struct list_elem *e2, void *aux) {
+  struct thread *t1 = list_entry(e1, struct thread, allelem);
+  struct thread *t2 = list_entry(e2, struct thread, allelem);
+  
+  return t1->priority < t2->priority;
+}
+
+void
+donate_priority (void) {
+
+    struct thread *cur = thread_current ();
+    for (int depth = 0; depth < 8; depth++){
+
+      if (!cur->wait_on_lock) break;
+
+      struct thread *holder = cur->wait_on_lock->holder;
+      holder->priority = cur->priority;
+      cur = holder;
+    }
+}
+
+void
+remove_with_lock (struct lock *lock) {
+    struct list_elem *e;
+    struct thread *cur = thread_current ();
+
+    for (e = list_begin (&cur->donations); e != list_end (&cur->donations); e = list_next (e)){
+		struct thread *t = list_entry (e, struct thread, donation_elem);
+      if (t->wait_on_lock == lock)
+        list_remove (&t->donation_elem);
+    }
+}
+
+
+void
+refresh_priority (void) {
+    struct thread *cur = thread_current ();
+
+    cur->priority = cur->init_priority;
+
+    if (!list_empty (&cur->donations)) {
+		list_sort (&cur->donations, comp_pri, 0);
+
+    	struct thread *front = list_entry (list_front (&cur->donations), struct thread, donation_elem);
+		if (front->priority > cur->priority)
+			cur->priority = front->priority;
+    }
+}
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -97,6 +185,7 @@ thread_init (void)
 
   lock_init (&tid_lock);
   list_init (&ready_list);
+  list_init (&sleeping_list);
   list_init (&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -125,13 +214,15 @@ thread_start (void)
 
 /* More efficient implementation for timer_sleep(). */
 void
-thread_sleep(int16_t ticks) 
+thread_sleep(int64_t ticks) 
 {
   struct thread *cur = running_thread();
   enum intr_level old_level = intr_disable();
   
   if (cur != idle_thread) {
-    list_push_back(&sleeping_list, &cur->elem);
+    struct list_elem *temp = &cur->elem;
+    list_remove(&cur->elem);
+    list_insert_ordered(&sleeping_list, temp, comp_pri, NULL);
     cur->status = THREAD_SLEEPING;
     cur->wake_time = timer_ticks() + ticks;
 
@@ -266,7 +357,8 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  // list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list, &t->elem, comp_pri, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -337,7 +429,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered (&ready_list, &cur->elem, comp_pri, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -364,7 +456,9 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  struct thread *cur = thread_current();
+  cur->init_priority = new_priority;
+  refresh_priority();
 }
 
 /* Returns the current thread's priority. */
@@ -491,9 +585,13 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->init_priority = priority;
   t->magic = THREAD_MAGIC;
 
+  t->wait_on_lock = NULL;
+
   old_level = intr_disable ();
+  list_init(&t->donations);
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
 }
@@ -581,33 +679,6 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
-
-  int16_t cur_ticks = timer_ticks();
-
-  if (cur_ticks >= wake_time_min) {
-    struct list_elem *temp, *e = list_begin(&sleeping_list);
-    int16_t next_wake_time_min = INT64_MAX;
-
-    while (e != list_end(&sleeping_list)) {
-      struct thread *t = list_entry(e, struct thread, allelem);
-      
-      if (cur_ticks >= t->wake_time) {
-        list_push_back(&ready_list, &t->elem);
-        t->status = THREAD_READY;
-        temp = e;
-        e = list_next(e);
-        list_remove(temp);
-      }
-      else {
-        if (next_wake_time_min > t->wake_time) {
-          next_wake_time_min = t->wake_time;
-        }
-        e = list_next(e);
-      }
-    }
-    wake_time_min = next_wake_time_min;
-  }
-
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;

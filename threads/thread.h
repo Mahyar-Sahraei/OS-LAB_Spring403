@@ -103,6 +103,11 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
 
     int64_t wake_time;
+
+    int64_t init_priority;
+    struct lock *wait_on_lock;
+    struct list donations;
+    struct list_elem donation_elem;
   };
 
 /* If false (default), use round-robin scheduler.
@@ -110,10 +115,18 @@ struct thread
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 
+void thread_wakeup(void);
+
+bool comp_pri(const struct list_elem *, const struct list_elem *, void *);
+
+void donate_pri(void);
+void remove_with_lock (struct lock *lock);
+void remove_with_lock (struct lock *);
+
 void thread_init (void);
 void thread_start (void);
 
-void thread_sleep(int64_t ticks);
+void thread_sleep(int64_t);
 
 void thread_tick (void);
 void thread_print_stats (void);
