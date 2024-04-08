@@ -101,10 +101,10 @@ thread_wakeup(int64_t cur_ticks) {
 /* Function that compares the priority of two threads*/
 bool
 comp_pri(const struct list_elem *e1, const struct list_elem *e2, void *aux) {
-  struct thread *t1 = list_entry(e1, struct thread, allelem);
-  struct thread *t2 = list_entry(e2, struct thread, allelem);
+  struct thread *t1 = list_entry(e1, struct thread, elem);
+  struct thread *t2 = list_entry(e2, struct thread, elem);
   
-  return t1->priority < t2->priority;
+  return t1->priority > t2->priority;
 }
 
 void
@@ -116,7 +116,12 @@ donate_priority (void) {
       if (!cur->wait_on_lock) break;
 
       struct thread *holder = cur->wait_on_lock->holder;
+
+      if (holder->priority >= cur->priority) break;
+
       holder->priority = cur->priority;
+      list_insert_ordered(&holder->donations, &cur->donation_elem, comp_pri, NULL);
+
       cur = holder;
     }
 }
@@ -141,8 +146,6 @@ refresh_priority (void) {
     cur->priority = cur->init_priority;
 
     if (!list_empty (&cur->donations)) {
-		  list_sort (&cur->donations, comp_pri, NULL);
-
     	struct thread *front = list_entry (list_front (&cur->donations), struct thread, donation_elem);
 		  if (front->priority > cur->priority)
 		  	cur->priority = front->priority;
@@ -343,6 +346,10 @@ thread_unblock (struct thread *t)
   ASSERT (t->status == THREAD_BLOCKED);
   list_insert_ordered(&ready_list, &t->elem, comp_pri, NULL);
   t->status = THREAD_READY;
+  
+  if (thread_current() != idle_thread && thread_current()->priority < t->priority )
+    thread_yield();
+
   intr_set_level (old_level);
 }
 
@@ -439,9 +446,25 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  enum intr_level old_level = intr_disable();
   struct thread *cur = thread_current();
+  
   cur->init_priority = new_priority;
+
+  if (new_priority < cur->priority && list_empty(&cur->donations)) {
+    cur->priority = new_priority;
+
+    if (!list_empty (&ready_list)) {
+      struct thread *next = list_entry(list_begin(&ready_list), struct thread, elem);
+      if (next != NULL && next->priority > new_priority) {
+        thread_yield();
+      }
+    }
+  }
+
   refresh_priority();
+
+  intr_set_level(old_level);
 }
 
 /* Returns the current thread's priority. */
