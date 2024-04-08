@@ -81,7 +81,7 @@ thread_wakeup(int64_t cur_ticks) {
     struct list_elem *temp, *e = list_begin(&sleeping_list);
     int64_t next_wake_time_min = INT64_MAX;
     while (e != list_end(&sleeping_list)) {
-      struct thread *t = list_entry(e, struct thread, allelem);
+      struct thread *t = list_entry(e, struct thread, sleepelem);
       
       if (cur_ticks >= t->wake_time) {
         e = list_remove(e);
@@ -127,7 +127,7 @@ remove_with_lock (struct lock *lock) {
     struct thread *cur = thread_current ();
 
     for (e = list_begin (&cur->donations); e != list_end (&cur->donations); e = list_next (e)){
-		struct thread *t = list_entry (e, struct thread, donation_elem);
+		  struct thread *t = list_entry (e, struct thread, donation_elem);
       if (t->wait_on_lock == lock)
         list_remove (&t->donation_elem);
     }
@@ -141,11 +141,11 @@ refresh_priority (void) {
     cur->priority = cur->init_priority;
 
     if (!list_empty (&cur->donations)) {
-		list_sort (&cur->donations, comp_pri, 0);
+		  list_sort (&cur->donations, comp_pri, NULL);
 
     	struct thread *front = list_entry (list_front (&cur->donations), struct thread, donation_elem);
-		if (front->priority > cur->priority)
-			cur->priority = front->priority;
+		  if (front->priority > cur->priority)
+		  	cur->priority = front->priority;
     }
 }
 
@@ -200,22 +200,19 @@ thread_start (void)
 void
 thread_sleep(int64_t ticks) 
 {
-  struct thread *cur = running_thread();
+  struct thread *cur = thread_current();
   enum intr_level old_level = intr_disable();
   
   if (cur != idle_thread) {
-    struct list_elem *temp = &cur->elem;
-    list_remove(&cur->elem);
-    list_push_back(&sleeping_list, temp);
-    cur->status = THREAD_BLOCKED;
     cur->wake_time = timer_ticks() + ticks;
+    list_push_back(&sleeping_list, &cur->sleepelem);
 
     /* Update minimum wake time */
     if (wake_time_min >= cur->wake_time) {
       wake_time_min = cur->wake_time;
     }
 
-    schedule();
+    thread_block();
   }
 
   intr_set_level(old_level);
@@ -224,7 +221,7 @@ thread_sleep(int64_t ticks)
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
-thread_tick (void) 
+thread_tick (int64_t ticks) 
 {
   struct thread *t = thread_current ();
 
@@ -237,6 +234,9 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  /* Wake sleeping threads up if it is the time to */
+  thread_wakeup(ticks);
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -341,7 +341,6 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  // list_push_back (&ready_list, &t->elem);
   list_insert_ordered(&ready_list, &t->elem, comp_pri, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
