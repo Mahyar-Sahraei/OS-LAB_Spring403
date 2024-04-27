@@ -21,6 +21,28 @@
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
+
+char **
+parse(const char *str) {
+  char *tokens[20] = { NULL };
+
+  char *token = strtok_r(str, " ");
+  tokens[0] = token;
+  int args = 1;
+  token = strtok_r(NULL, " ");
+
+  for (; token != NULL; token = strtok_r(NULL, " ")) {
+      tokens[args++] = token;
+  }
+
+  return tokens;
+}
+
+char *
+get_command(const char *str) {
+  return strtok_r(str, " ");
+}
+
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -39,7 +61,7 @@ process_execute (const char *file_name)
   strlcpy (fn_copy, file_name, PGSIZE);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (get_command(file_name), PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -72,7 +94,7 @@ start_process (void *file_name_)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
-  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  __asm__ __volatile__ ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
 
